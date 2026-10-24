@@ -120,9 +120,9 @@ patrones-secuenciales-de-tr-fico/
 > **Instrucción de Flujo de Trabajo:** Al completar cada fase, se debe marcar el checkbox correspondiente `[x]` en este archivo `CONTEXT.md` y actualizar la sección 5 antes de hacer commit.
 
 ### Fase 1: Cimientos, Configuración y Persistencia SQLite
-- [ ] Crear `requirements.txt` y `.gitignore`.
-- [ ] Crear `src/__init__.py` y `src/config.py` (con todos los parámetros de la ruta, límites de guardrails, hiperparámetros de la LSTM y rutas de directorios).
-- [ ] Crear `src/database/__init__.py` y `src/database/db_manager.py` (creación de tablas `historico_trafico` y `auditoria_inferencias`, inserción por lotes y consultas históricas).
+- [x] Crear `requirements.txt` y `.gitignore`.
+- [x] Crear `src/__init__.py` y `src/config.py` (con todos los parámetros de la ruta, límites de guardrails, hiperparámetros de la LSTM y rutas de directorios).
+- [x] Crear `src/database/__init__.py` y `src/database/db_manager.py` (creación de tablas `historico_trafico` y `auditoria_inferencias`, inserción por lotes y consultas históricas).
 
 ### Fase 2: Contratos de Datos y Guardrails (Entrada y Salida)
 - [ ] Crear `src/guardrails/__init__.py` y `src/guardrails/exceptions.py` (jerarquía de excepciones personalizadas).
@@ -148,8 +148,14 @@ patrones-secuenciales-de-tr-fico/
 
 ## 5. Estado Actual y Siguiente Paso Exacto para Claude
 
-* **Estado Actual del Repositorio (`BRIAM13/patrones-secuenciales-de-tr-fico`):** Repositorio recién inicializado. Únicamente contiene este archivo `CONTEXT.md` en la raíz. Aún no se ha escrito código de la Fase 1.
-* **Fase Activa:** **Fase 1 — Cimientos, Configuración y Persistencia SQLite**.
+* **Estado Actual del Repositorio (`BRIAM13/patrones-secuenciales-de-tr-fico`):** **Fase 1 completada.** Existen `requirements.txt` (versiones fijas, compatibles con Python 3.10 – 3.13), `.gitignore`, `src/__init__.py`, `src/config.py` (única fuente de constantes: rutas, dominio, guardrails, hiperparámetros LSTM, generador sintético, drift y BD) y `src/database/` con `GestorBaseDatos`.
+* **Notas de la Fase 1 relevantes para fases siguientes:**
+  * `GestorBaseDatos` expone: `inicializar_esquema`, `insertar_lote_historico` / `insertar_dataframe_historico` (transacción atómica, `reemplazar_existentes` para UPSERT), `obtener_historico`, `obtener_ultimos_dias`, `obtener_historico_por_franja` (base del fallback heurístico), `obtener_rango_fechas`, `contar_registros_historico`, `eliminar_historico`, `registrar_auditoria` (SQLite + `logs/auditoria_trafico.jsonl` en la misma transacción), `obtener_auditorias` y `contar_auditorias`.
+  * La BD solo aplica validación **estructural**; los tiempos `NaN`/infinitos se guardan como `NULL` para que el `ValidadorEntrada` aplique la regla del 15 %. Los límites físicos $[10, 240]$ min siguen siendo responsabilidad de la Fase 2.
+  * `dia_semana` usa la convención de Python (lunes = 0 … domingo = 6); `es_fin_de_semana` y `es_quincena_o_fin_mes` (día 15 o último día del mes) se derivan de `fecha_hora` si no se proporcionan.
+  * `estado_auditoria` admite `APROBADO`, `APROBADO_CON_ALERTAS` y `RECHAZADO` (`ESTADOS_AUDITORIA_VALIDOS` en `src/config.py`).
+  * `src/database/db_manager.py` define `ErrorBaseDatos`; en la Fase 2 conviene integrarla en la jerarquía de `src/guardrails/exceptions.py`.
+* **Fase Activa:** **Fase 2 — Contratos de Datos y Guardrails (Entrada y Salida)**.
 
 ### Instrucción Exacta para Claude Web (Prompt de Inicio)
-> *"Hola Claude. Acabo de conectar mi repositorio `BRIAM13/patrones-secuenciales-de-tr-fico`. Por favor, lee el archivo `CONTEXT.md` en la raíz del proyecto para entender toda la arquitectura del sistema de predicción de tráfico con redes LSTM y Agentes. Tu tarea en este turno es programar **exclusivamente la Fase 1 completa**: genera el código listo para producción de `requirements.txt`, `.gitignore`, `src/__init__.py`, `src/config.py`, `src/database/__init__.py` y `src/database/db_manager.py`, respetando todas las reglas de la Sección 3. Al terminar, muéstrame cómo actualizar los checkboxes de la Fase 1 en `CONTEXT.md`."*
+> *"Hola Claude. Lee el archivo `CONTEXT.md` en la raíz del proyecto `BRIAM13/patrones-secuenciales-de-tr-fico`. La Fase 1 ya está completa. Tu tarea en este turno es programar **exclusivamente la Fase 2 completa**: genera el código listo para producción de `src/guardrails/__init__.py`, `src/guardrails/exceptions.py`, `src/guardrails/input_validator.py` y `src/guardrails/output_validator.py`, importando todas las constantes desde `src/config.py` y respetando todas las reglas de la Sección 3. Al terminar, actualiza los checkboxes de la Fase 2 y la Sección 5 de `CONTEXT.md`."*
