@@ -5,11 +5,11 @@ Expone el ``GestorBaseDatos`` (tablas ``historico_trafico`` y
 """
 
 from src.database.db_manager import (
-    ErrorBaseDatos,
     GestorBaseDatos,
     RegistroAuditoria,
     RegistroHistorico,
 )
+from src.guardrails.exceptions import ErrorBaseDatos
 
 __all__: list[str] = [
     "ErrorBaseDatos",

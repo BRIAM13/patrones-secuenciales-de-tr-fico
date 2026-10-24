@@ -14,7 +14,7 @@ desde aquí, por ejemplo::
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Final
+from typing import Final, Literal
 
 # =============================================================================
 # 1. Rutas de directorios y archivos
@@ -149,8 +149,26 @@ TIEMPO_MAX_ENTRADA_MIN: Final[float] = 240.0
 UMBRAL_DATOS_CORRUPTOS: Final[float] = 0.15
 """Fracción máxima de datos corruptos imputables por interpolación (15 %)."""
 
-METODO_INTERPOLACION: Final[str] = "linear"
+METODO_INTERPOLACION: Final[Literal["linear", "time"]] = "linear"
 """Método de interpolación temporal para la imputación controlada."""
+
+COLUMNAS_OBLIGATORIAS_INGESTA: Final[tuple[str, ...]] = (
+    COLUMNA_FECHA_HORA,
+    COLUMNA_TIEMPO_RUTA_A,
+    COLUMNA_TIEMPO_RUTA_B,
+)
+"""Columnas mínimas que debe traer una fuente externa (CSV / DataFrame)."""
+
+MAX_ERRORES_REPORTADOS: Final[int] = 10
+"""Máximo de errores individuales incluidos en el detalle de una excepción."""
+
+ALCANCE_VALIDACION_SERIE: Final[str] = "SERIE"
+ALCANCE_VALIDACION_VENTANA: Final[str] = "VENTANA"
+ALCANCES_VALIDACION: Final[tuple[str, ...]] = (ALCANCE_VALIDACION_SERIE, ALCANCE_VALIDACION_VENTANA)
+
+ACCION_SIN_CAMBIOS: Final[str] = "SIN_CAMBIOS"
+ACCION_IMPUTACION_LINEAL: Final[str] = "IMPUTACION_LINEAL"
+ACCIONES_VALIDACION: Final[tuple[str, ...]] = (ACCION_SIN_CAMBIOS, ACCION_IMPUTACION_LINEAL)
 
 # =============================================================================
 # 6. Guardrails de salida (ValidadorSalida) y modo fallback
@@ -194,6 +212,9 @@ PACIENCIA_REDUCE_LR: Final[int] = 5
 FACTOR_REDUCE_LR: Final[float] = 0.5
 TASA_APRENDIZAJE_MINIMA: Final[float] = 1e-6
 
+RANGO_ESCALADO: Final[tuple[int, int]] = (0, 1)
+"""Rango de salida de los ``MinMaxScaler`` de entrada y salida."""
+
 ITERACIONES_MC_DROPOUT: Final[int] = 50
 """Número de pasadas estocásticas para estimar incertidumbre (MC Dropout)."""
 
@@ -218,7 +239,22 @@ FACTOR_QUINCENA: Final[float] = 1.20
 """Multiplicador de la congestión en quincena / fin de mes."""
 
 PROBABILIDAD_CLIMA_ADVERSO: Final[float] = 0.10
+"""Probabilidad diaria de un episodio de clima adverso."""
+
+DURACION_MIN_CLIMA_H: Final[int] = 3
+DURACION_MAX_CLIMA_H: Final[int] = 9
+"""Duración (horas, inclusiva) de un episodio de clima adverso."""
+
 FACTOR_CLIMA_ADVERSO: Final[float] = 1.30
+
+PROBABILIDAD_INCIDENTE_RUTA_A: Final[float] = 0.01
+"""Probabilidad horaria de un incidente (choque, obra) en ``Ruta_A``."""
+
+DEMORA_MEDIA_INCIDENTE_MIN: Final[float] = 15.0
+"""Media (minutos) de la demora exponencial causada por un incidente."""
+
+DECIMALES_TIEMPO: Final[int] = 2
+"""Decimales con los que se redondean los tiempos sintéticos."""
 
 VOLATILIDAD_RUTA_A: Final[float] = 0.18
 """Desviación relativa del ruido de ``Ruta_A`` (más volátil)."""

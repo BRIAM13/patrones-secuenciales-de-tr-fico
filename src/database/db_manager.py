@@ -57,6 +57,7 @@ from src.config import (
     TAMANO_LOTE_INSERCION,
     TIEMPO_ESPERA_BLOQUEO_BD_S,
 )
+from src.guardrails.exceptions import ErrorBaseDatos
 
 registro_log: logging.Logger = logging.getLogger(__name__)
 
@@ -64,17 +65,8 @@ _TOLERANCIA_HORA_DECIMAL: Final[float] = 1e-6
 
 
 # =============================================================================
-# Excepciones y tipos de registros
+# Tipos de registros
 # =============================================================================
-
-
-class ErrorBaseDatos(Exception):
-    """Error de persistencia: datos estructuralmente inválidos o fallo de SQLite.
-
-    Envuelve ``sqlite3.Error`` y ``OSError`` (escritura del log JSONL) para que
-    las capas superiores manejen un único tipo de excepción de persistencia y
-    lo registren mediante el ``AgenteAuditor``.
-    """
 
 
 class RegistroHistorico(TypedDict, total=False):

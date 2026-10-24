@@ -125,13 +125,13 @@ patrones-secuenciales-de-tr-fico/
 - [x] Crear `src/database/__init__.py` y `src/database/db_manager.py` (creación de tablas `historico_trafico` y `auditoria_inferencias`, inserción por lotes y consultas históricas).
 
 ### Fase 2: Contratos de Datos y Guardrails (Entrada y Salida)
-- [ ] Crear `src/guardrails/__init__.py` y `src/guardrails/exceptions.py` (jerarquía de excepciones personalizadas).
-- [ ] Crear `src/guardrails/input_validator.py` (clase `ValidadorEntrada` con esquemas Pydantic, verificación de límites $[10, 240]\text{ min}$, continuidad de ventana de $14\text{ días}$ e imputación controlada).
+- [x] Crear `src/guardrails/__init__.py` y `src/guardrails/exceptions.py` (jerarquía de excepciones personalizadas).
+- [x] Crear `src/guardrails/input_validator.py` (clase `ValidadorEntrada` con esquemas Pydantic, verificación de límites $[10, 240]\text{ min}$, continuidad de ventana de $14\text{ días}$ e imputación controlada).
 - [ ] Crear `src/guardrails/output_validator.py` (clase `ValidadorSalida` con clipping $[10, 180]\text{ min}$, evaluación de umbral de confianza del $75\%$ y formato JSON de contrato estricto).
 
 ### Fase 3: Agente de Datos y Agente Auditor (MLOps)
-- [ ] Crear `src/agents/__init__.py`.
-- [ ] Crear `src/agents/data_agent.py` (clase `AgenteDatos`: generador sintético de $1\text{ año}$ realista con picos gaussianos en horas punta y efecto quincena, persistencia en SQLite, codificación cíclica seno/coseno, `MinMaxScaler` y generador de ventanas deslizantes $14 \rightarrow 7$ días sin *data leakage*).
+- [x] Crear `src/agents/__init__.py`.
+- [x] Crear `src/agents/data_agent.py` (clase `AgenteDatos`: generador sintético de $1\text{ año}$ realista con picos gaussianos en horas punta y efecto quincena, persistencia en SQLite, codificación cíclica seno/coseno, `MinMaxScaler` y generador de ventanas deslizantes $14 \rightarrow 7$ días sin *data leakage*).
 - [ ] Crear `src/agents/auditor_agent.py` (clase `AgenteAuditor`: registro en SQLite y `logs/auditoria_trafico.jsonl`, cálculo de $MAE$, $RMSE$, sesgo y prueba estadística Kolmogorov-Smirnov / Z-score para detección de *Data Drift*).
 
 ### Fase 4: Núcleo Neuronal (`AgentePredictorLSTM`) y Estratega de Ruta
@@ -148,14 +148,15 @@ patrones-secuenciales-de-tr-fico/
 
 ## 5. Estado Actual y Siguiente Paso Exacto para Claude
 
-* **Estado Actual del Repositorio (`BRIAM13/patrones-secuenciales-de-tr-fico`):** **Fase 1 completada.** Existen `requirements.txt` (versiones fijas, compatibles con Python 3.10 – 3.13), `.gitignore`, `src/__init__.py`, `src/config.py` (única fuente de constantes: rutas, dominio, guardrails, hiperparámetros LSTM, generador sintético, drift y BD) y `src/database/` con `GestorBaseDatos`.
-* **Notas de la Fase 1 relevantes para fases siguientes:**
-  * `GestorBaseDatos` expone: `inicializar_esquema`, `insertar_lote_historico` / `insertar_dataframe_historico` (transacción atómica, `reemplazar_existentes` para UPSERT), `obtener_historico`, `obtener_ultimos_dias`, `obtener_historico_por_franja` (base del fallback heurístico), `obtener_rango_fechas`, `contar_registros_historico`, `eliminar_historico`, `registrar_auditoria` (SQLite + `logs/auditoria_trafico.jsonl` en la misma transacción), `obtener_auditorias` y `contar_auditorias`.
-  * La BD solo aplica validación **estructural**; los tiempos `NaN`/infinitos se guardan como `NULL` para que el `ValidadorEntrada` aplique la regla del 15 %. Los límites físicos $[10, 240]$ min siguen siendo responsabilidad de la Fase 2.
-  * `dia_semana` usa la convención de Python (lunes = 0 … domingo = 6); `es_fin_de_semana` y `es_quincena_o_fin_mes` (día 15 o último día del mes) se derivan de `fecha_hora` si no se proporcionan.
-  * `estado_auditoria` admite `APROBADO`, `APROBADO_CON_ALERTAS` y `RECHAZADO` (`ESTADOS_AUDITORIA_VALIDOS` en `src/config.py`).
-  * `src/database/db_manager.py` define `ErrorBaseDatos`; en la Fase 2 conviene integrarla en la jerarquía de `src/guardrails/exceptions.py`.
-* **Fase Activa:** **Fase 2 — Contratos de Datos y Guardrails (Entrada y Salida)**.
+* **Estado Actual del Repositorio (`BRIAM13/patrones-secuenciales-de-tr-fico`):** **Fase 1 completada; Fase 2 y Fase 3 parcialmente completadas** (lado de *entrada* y de *datos*). Implementados: `src/guardrails/exceptions.py`, `src/guardrails/input_validator.py`, `src/agents/data_agent.py`, y pruebas en `tests/test_guardrails.py` / `tests/test_agents.py` (55 pruebas en verde; cubren solo los componentes ya implementados).
+* **Pendiente de las fases 2 y 3:** `src/guardrails/output_validator.py` (`ValidadorSalida`) y `src/agents/auditor_agent.py` (`AgenteAuditor`).
+* **Notas de implementación relevantes para fases siguientes:**
+  * **Excepciones:** base `ErrorSistemaTrafico(mensaje, *, detalles)` con `codigo` y `a_diccionario()` para auditoría; `ErrorIntegridadSecuencial` hereda de `ErrorValidacionEntrada`; `ErrorBaseDatos` se movió a `exceptions.py` (se sigue exportando desde `src.database`).
+  * **`ValidadorEntrada`:** 3 capas: esquema Pydantic estricto (`RegistroTraficoEntrada`), continuidad horaria (sin duplicados, huecos ni horas inexactas; ventana de inferencia = 336 pasos) y calidad física. Un tiempo es *corrupto* si es `NaN`/infinito o está fuera de $[10, 240]$ min; la regla del 15 % se evalúa en **cada ventana deslizante de 14 días** (no solo sobre el promedio de la serie). Si se cumple, imputa por interpolación lineal; si no, aborta. Devuelve `ResultadoValidacion(datos, reporte)` y el `ReporteValidacion` es serializable con `model_dump(mode="json")`.
+  * **`AgenteDatos`:** `generar_datos_sinteticos` (picos gaussianos 08:00/19:00, quincena, fin de semana, clima adverso, incidentes en `Ruta_A`, `fraccion_corrupcion` opcional para pruebas), `ingerir_csv` / `ingerir_dataframe` (regulariza la rejilla horaria, valida y persiste los corruptos como `NULL`), `cargar_historico`, `inicializar_datos`, `construir_conjuntos` (`ConjuntosEntrenamiento` sin *data leakage*: división cronológica previa, scalers ajustados solo con entrenamiento y objetivos `y` que nunca cruzan tramos), `preparar_ventana_inferencia` (`VentanaInferencia`), `invertir_escala_salida`, `guardar_scalers` / `cargar_scalers`.
+  * Tensores: `x` → `(n, 336, 9)` con `COLUMNAS_CARACTERISTICAS`; `y` → `(n, 168, 2)`. Con 1 año y paso de 24 h: 235 / 48 / 48 ventanas (entrenamiento / validación / prueba).
+  * Los `ReporteValidacion` se acumulan en `AgenteDatos.reportes_validacion`, pendientes de que el `AgenteAuditor` los registre.
+* **Fase Activa:** **Completar Fase 2 (`ValidadorSalida`) y Fase 3 (`AgenteAuditor`)**.
 
 ### Instrucción Exacta para Claude Web (Prompt de Inicio)
-> *"Hola Claude. Lee el archivo `CONTEXT.md` en la raíz del proyecto `BRIAM13/patrones-secuenciales-de-tr-fico`. La Fase 1 ya está completa. Tu tarea en este turno es programar **exclusivamente la Fase 2 completa**: genera el código listo para producción de `src/guardrails/__init__.py`, `src/guardrails/exceptions.py`, `src/guardrails/input_validator.py` y `src/guardrails/output_validator.py`, importando todas las constantes desde `src/config.py` y respetando todas las reglas de la Sección 3. Al terminar, actualiza los checkboxes de la Fase 2 y la Sección 5 de `CONTEXT.md`."*
+> *"Hola Claude. Lee el archivo `CONTEXT.md` en la raíz del proyecto `BRIAM13/patrones-secuenciales-de-tr-fico`. La Fase 1, los guardrails de entrada y el `AgenteDatos` ya están implementados. Tu tarea en este turno es completar las fases 2 y 3: programa `src/guardrails/output_validator.py` (`ValidadorSalida` con clipping $[10, 180]$ min, bandera `ALERTA_EXTRAPOLACION`, umbral de confianza del 75 %, MAE máximo de 12 min y contrato JSON estricto con Pydantic) y `src/agents/auditor_agent.py` (`AgenteAuditor`: registro mediante `GestorBaseDatos.registrar_auditoria`, consumo de `AgenteDatos.reportes_validacion`, métricas MAE/RMSE/sesgo y detección de *Data Drift* con Kolmogorov-Smirnov y Z-score), con sus pruebas en `tests/`, importando todas las constantes desde `src/config.py` y respetando la Sección 3. Al terminar, actualiza los checkboxes y la Sección 5 de `CONTEXT.md`."*
