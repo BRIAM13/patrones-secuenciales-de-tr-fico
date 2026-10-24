@@ -6,6 +6,7 @@ from src.guardrails.exceptions import (
     ErrorContratoSalida,
     ErrorExtrapolacionSalida,
     ErrorIntegridadSecuencial,
+    ErrorModeloNoDisponible,
     ErrorSistemaTrafico,
     ErrorValidacionEntrada,
 )
@@ -22,6 +23,7 @@ from src.guardrails.output_validator import (
     RecomendacionTrafico,
     ValidadorSalida,
     determinar_estado_auditoria,
+    estimar_nivel_confianza,
 )
 
 __all__: list[str] = [
@@ -31,6 +33,7 @@ __all__: list[str] = [
     "ErrorContratoSalida",
     "ErrorExtrapolacionSalida",
     "ErrorIntegridadSecuencial",
+    "ErrorModeloNoDisponible",
     "ErrorSistemaTrafico",
     "ErrorValidacionEntrada",
     "EvaluacionConfianza",
@@ -42,4 +45,5 @@ __all__: list[str] = [
     "ValidadorEntrada",
     "ValidadorSalida",
     "determinar_estado_auditoria",
+    "estimar_nivel_confianza",
 ]

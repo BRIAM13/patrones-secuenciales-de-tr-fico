@@ -237,6 +237,23 @@ RANGO_ESCALADO: Final[tuple[int, int]] = (0, 1)
 ITERACIONES_MC_DROPOUT: Final[int] = 50
 """Número de pasadas estocásticas para estimar incertidumbre (MC Dropout)."""
 
+Z_INTERVALO_CONFIANZA: Final[float] = 1.96
+"""Cuantil normal del intervalo de confianza al 95 % (semiancho = z·σ)."""
+
+TOLERANCIA_INCERTIDUMBRE_RELATIVA: Final[float] = 0.15
+"""Semiancho máximo del intervalo, relativo al tiempo predicho, para considerar
+una hora "confiable" (15 %)."""
+
+TOLERANCIA_INCERTIDUMBRE_ABSOLUTA_MIN: Final[float] = 10.0
+"""Piso absoluto (minutos) de la tolerancia anterior, para tiempos cortos.
+
+Calibrado sobre 1 año sintético: con ``máx(10 min, 15 %·μ)`` un modelo con
+MAE de validación de 3,5 min obtiene ~0,96 de confianza y uno subentrenado
+(MAE 7,1 min) ~0,48, de modo que el umbral de 0,75 los separa."""
+
+VERBOSIDAD_ENTRENAMIENTO: Final[int] = 0
+"""Nivel de ``verbose`` de ``model.fit`` (0 = silencioso)."""
+
 # =============================================================================
 # 8. Generador de datos sintéticos (AgenteDatos)
 # =============================================================================
@@ -293,6 +310,12 @@ ATENUACION_PICO_RUTA_B: Final[float] = 0.55
 
 DESPLAZAMIENTOS_HORARIO_MIN: Final[tuple[int, ...]] = (-30, -15, 0, 15)
 """Desplazamientos simulados de la hora de salida (minutos)."""
+
+RUTA_HABITUAL: Final[str] = RUTA_A
+"""Ruta de referencia para calcular el ahorro (la vía principal)."""
+
+SEMANAS_HISTORIA_FALLBACK: Final[int] = 12
+"""Semanas recientes usadas por la mediana del modo ``FALLBACK_HEURISTICO``."""
 
 # =============================================================================
 # 10. Auditoría y Data Drift (AgenteAuditor)

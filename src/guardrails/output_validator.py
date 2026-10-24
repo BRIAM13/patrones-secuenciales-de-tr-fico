@@ -57,14 +57,64 @@ from src.config import (
     RUTAS_DISPONIBLES,
     TIEMPO_MAX_SALIDA_MIN,
     TIEMPO_MIN_SALIDA_MIN,
+    TOLERANCIA_INCERTIDUMBRE_ABSOLUTA_MIN,
+    TOLERANCIA_INCERTIDUMBRE_RELATIVA,
     UMBRAL_CONFIANZA_MIN,
     UMBRAL_MAE_MAX_MIN,
+    Z_INTERVALO_CONFIANZA,
 )
 from src.guardrails.exceptions import ErrorContratoSalida, ErrorExtrapolacionSalida
 
 registro_log: logging.Logger = logging.getLogger(__name__)
 
 _PATRON_HORA_SALIDA: Final[str] = r"^([01]\d|2[0-3]):[0-5]\d$"
+
+
+# =============================================================================
+# Estimación de confianza
+# =============================================================================
+
+
+def estimar_nivel_confianza(
+    media: npt.ArrayLike,
+    desviacion: npt.ArrayLike,
+    z: float = Z_INTERVALO_CONFIANZA,
+    tolerancia_relativa: float = TOLERANCIA_INCERTIDUMBRE_RELATIVA,
+    tolerancia_absoluta: float = TOLERANCIA_INCERTIDUMBRE_ABSOLUTA_MIN,
+) -> float:
+    """Convierte una dispersión predictiva en un nivel de confianza ``[0, 1]``.
+
+    Una hora predicha es *confiable* si el semiancho de su intervalo al 95 %
+    (``z·σ``) no supera ``max(tolerancia_absoluta, tolerancia_relativa·μ)``.
+    La confianza es la fracción de horas (de ambas rutas) confiables, por lo
+    que se interpreta como "porcentaje del horizonte con incertidumbre
+    acotada". La usan tanto el *Monte Carlo Dropout* de la red como la
+    dispersión histórica del modo heurístico.
+
+    Args:
+        media: Tiempos predichos (minutos).
+        desviacion: Desviación estándar asociada, con la misma forma.
+        z: Cuantil normal del intervalo.
+        tolerancia_relativa: Semiancho máximo relativo al tiempo predicho.
+        tolerancia_absoluta: Piso absoluto de la tolerancia (minutos).
+
+    Returns:
+        Fracción de horas confiables en ``[0, 1]``.
+
+    Raises:
+        ValueError: Si las formas difieren, están vacías o hay valores no
+            finitos o desviaciones negativas.
+    """
+    mu = np.asarray(media, dtype=float)
+    sigma = np.asarray(desviacion, dtype=float)
+    if mu.shape != sigma.shape or mu.size == 0:
+        raise ValueError(
+            f"Formas incompatibles o vacías: media {mu.shape}, desviación {sigma.shape}"
+        )
+    if not (np.isfinite(mu).all() and np.isfinite(sigma).all()) or (sigma < 0).any():
+        raise ValueError("La media y la desviación deben ser finitas y la desviación >= 0.")
+    tolerancia = np.maximum(tolerancia_absoluta, tolerancia_relativa * np.abs(mu))
+    return float(np.mean(z * sigma <= tolerancia))
 
 
 # =============================================================================

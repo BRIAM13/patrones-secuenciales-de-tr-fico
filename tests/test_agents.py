@@ -1,8 +1,10 @@
-"""Pruebas de los agentes: ``AgenteDatos`` (datos e ingestión) y ``AgenteAuditor`` (MLOps)."""
+"""Pruebas de los agentes: datos, auditoría, estrategia de ruta y predictor LSTM."""
 
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
+from datetime import date, time
 from pathlib import Path
 from typing import Any
 
@@ -11,7 +13,12 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.agents import AgenteAuditor, AgenteDatos, codificar_variables_ciclicas
+from src.agents import (
+    AgenteAuditor,
+    AgenteDatos,
+    AgenteEstrategaRuta,
+    codificar_variables_ciclicas,
+)
 from src.config import (
     COLUMNA_TIEMPO_RUTA_A,
     COLUMNA_TIEMPO_RUTA_B,
@@ -27,6 +34,7 @@ from src.guardrails import (
     AlertaDataDrift,
     ErrorBaseDatos,
     ErrorIntegridadSecuencial,
+    ErrorModeloNoDisponible,
     ErrorSistemaTrafico,
     ErrorValidacionEntrada,
     ValidadorEntrada,
@@ -573,3 +581,350 @@ def test_resumir_auditorias(auditor: AgenteAuditor) -> None:
     assert resumen.confianza_media_pct == pytest.approx(70.0)
     assert resumen.mae_medio == pytest.approx(7.0)
     assert resumen.alertas_drift == 1
+
+
+# =============================================================================
+# AgenteEstrategaRuta
+# =============================================================================
+
+INICIO_HORIZONTE = pd.Timestamp("2025-04-07 00:00:00")  # lunes
+
+
+def prediccion_horaria(
+    ruta_a: float | dict[int, float] = 50.0, ruta_b: float | dict[int, float] = 50.0
+) -> pd.DataFrame:
+    """Predicción de 168 h; cada ruta es un valor fijo o un mapa hora del día → minutos."""
+    fechas = pd.date_range(INICIO_HORIZONTE, periods=PASOS_VENTANA_SALIDA, freq="h")
+
+    def valores(definicion: float | dict[int, float]) -> list[float]:
+        if isinstance(definicion, dict):
+            return [definicion.get(f.hour, 30.0) for f in fechas]
+        return [definicion] * len(fechas)
+
+    return pd.DataFrame(
+        {
+            "fecha_hora": fechas,
+            COLUMNA_TIEMPO_RUTA_A: valores(ruta_a),
+            COLUMNA_TIEMPO_RUTA_B: valores(ruta_b),
+        }
+    )
+
+
+@pytest.fixture
+def estratega(gestor: GestorBaseDatos) -> AgenteEstrategaRuta:
+    """Estratega con los desplazamientos por defecto [-30, -15, 0, +15]."""
+    return AgenteEstrategaRuta(gestor)
+
+
+def test_adelantar_salida_por_la_ruta_habitual(estratega: AgenteEstrategaRuta) -> None:
+    prediccion = prediccion_horaria(ruta_a={7: 40.0, 8: 60.0}, ruta_b=55.0)
+    plan = estratega.planificar_viaje(prediccion, date(2025, 4, 8), "07:30")
+    assert plan.ruta_recomendada == "Ruta_A"
+    assert plan.hora_optima_salida == "07:00"
+    assert plan.mejor_opcion.desplazamiento_min == -30
+    assert plan.tiempo_estimado_min == pytest.approx(40.0)
+    assert plan.tiempo_ruta_habitual_min == pytest.approx(50.0)  # 07:30 interpolado
+    assert plan.ahorro_estimado_min == pytest.approx(10.0)
+    assert len(plan.alternativas) == 8
+
+
+def test_interpolacion_lineal_entre_horas(estratega: AgenteEstrategaRuta) -> None:
+    prediccion = prediccion_horaria(ruta_a={7: 40.0, 8: 60.0}, ruta_b=55.0)
+    plan = estratega.planificar_viaje(prediccion, date(2025, 4, 8), time(7, 30))
+    opcion = next(
+        o for o in plan.alternativas if o.ruta == "Ruta_A" and o.desplazamiento_min == -15
+    )
+    assert opcion.hora_salida == "07:15"
+    assert opcion.tiempo_estimado_min == pytest.approx(45.0)
+
+
+def test_cambiar_a_ruta_alterna_sin_mover_la_salida(estratega: AgenteEstrategaRuta) -> None:
+    plan = estratega.planificar_viaje(
+        prediccion_horaria(ruta_a=50.0, ruta_b=30.0), date(2025, 4, 9), "18:00"
+    )
+    assert plan.ruta_recomendada == "Ruta_B"
+    assert plan.mejor_opcion.desplazamiento_min == 0  # empate en tiempo → menor |d|
+    assert plan.ahorro_estimado_min == pytest.approx(20.0)
+
+
+def test_empate_entre_rutas_prefiere_el_orden_configurado(estratega: AgenteEstrategaRuta) -> None:
+    plan = estratega.planificar_viaje(prediccion_horaria(), date(2025, 4, 9), "12:00")
+    assert plan.ruta_recomendada == "Ruta_A" and plan.ahorro_estimado_min == 0.0
+
+
+def test_salida_fuera_del_horizonte(estratega: AgenteEstrategaRuta) -> None:
+    with pytest.raises(ErrorValidacionEntrada, match="horizonte"):
+        estratega.planificar_viaje(prediccion_horaria(), date(2025, 4, 7), "00:10")
+    with pytest.raises(ErrorValidacionEntrada, match="horizonte"):
+        estratega.planificar_viaje(prediccion_horaria(), date(2025, 4, 20), "08:00")
+
+
+@pytest.mark.parametrize("hora", ["7:3", "25:00", "siete"])
+def test_hora_deseada_invalida(estratega: AgenteEstrategaRuta, hora: str) -> None:
+    with pytest.raises(ErrorValidacionEntrada, match="HH:MM"):
+        estratega.planificar_viaje(prediccion_horaria(), date(2025, 4, 8), hora)
+
+
+def test_prediccion_invalida_para_planificar(estratega: AgenteEstrategaRuta) -> None:
+    con_nan = prediccion_horaria()
+    con_nan.loc[30, COLUMNA_TIEMPO_RUTA_A] = np.nan
+    with pytest.raises(ErrorValidacionEntrada, match="acótela"):
+        estratega.planificar_viaje(con_nan, date(2025, 4, 8), "08:00")
+    with pytest.raises(ErrorValidacionEntrada, match="continua"):
+        estratega.planificar_viaje(prediccion_horaria().drop(index=[5]), date(2025, 4, 8), "08:00")
+    with pytest.raises(ErrorValidacionEntrada, match="ruta_habitual"):
+        estratega.planificar_viaje(prediccion_horaria(), date(2025, 4, 8), "08:00", "Ruta_Z")
+
+
+@pytest.mark.parametrize("desplazamientos", [(-15, 15), (0, 0, 15)])
+def test_desplazamientos_invalidos(desplazamientos: tuple[int, ...]) -> None:
+    with pytest.raises(ValueError):
+        AgenteEstrategaRuta(desplazamientos_min=desplazamientos)
+
+
+def test_resumir_tendencia_de_7_dias(estratega: AgenteEstrategaRuta) -> None:
+    prediccion = prediccion_horaria(ruta_a={7: 70.0, 8: 70.0, 9: 70.0}, ruta_b=45.0)
+    tendencia = estratega.resumir_tendencia(prediccion)
+    assert len(tendencia) == 7
+    assert tendencia[0].fecha == date(2025, 4, 7)
+    assert tendencia[0].manana_por_ruta == {"Ruta_A": 70.0, "Ruta_B": 45.0}
+    assert tendencia[0].mejor_ruta_manana == "Ruta_B"
+    assert tendencia[0].mejor_ruta_tarde == "Ruta_A"  # 30 min fuera de la punta de mañana
+
+
+def historia_semanal(semanas: int, fin: pd.Timestamp = INICIO_HORIZONTE) -> pd.DataFrame:
+    """Historia que repite un patrón semanal exacto: 20 + 2·día + hora."""
+    fechas = pd.date_range(end=fin - pd.Timedelta(hours=1), periods=semanas * 168, freq="h")
+    patron = 20.0 + 2.0 * fechas.weekday + fechas.hour
+    return pd.DataFrame(
+        {
+            "fecha_hora": fechas,
+            "dia_semana": fechas.weekday,
+            "hora_decimal": fechas.hour.astype(float),
+            COLUMNA_TIEMPO_RUTA_A: patron,
+            COLUMNA_TIEMPO_RUTA_B: patron + 5.0,
+        }
+    )
+
+
+def test_fallback_heuristico_usa_la_mediana_por_dia_y_hora(estratega: AgenteEstrategaRuta) -> None:
+    historia = historia_semanal(4)
+    antigua = historia_semanal(4, fin=INICIO_HORIZONTE - pd.Timedelta(weeks=4))
+    antigua[[COLUMNA_TIEMPO_RUTA_A, COLUMNA_TIEMPO_RUTA_B]] = 200.0  # fuera de las 4 semanas
+    futura = historia_semanal(1, fin=INICIO_HORIZONTE + pd.Timedelta(weeks=1))
+    futura[[COLUMNA_TIEMPO_RUTA_A, COLUMNA_TIEMPO_RUTA_B]] = 999.0  # nunca debe usarse
+    completa = pd.concat([antigua, historia, futura], ignore_index=True)
+
+    fechas = pd.date_range(INICIO_HORIZONTE, periods=PASOS_VENTANA_SALIDA, freq="h")
+    resultado = estratega.generar_prediccion_heuristica(fechas, historico=completa, semanas=4)
+    esperado = 20.0 + 2.0 * fechas.weekday + fechas.hour
+    np.testing.assert_allclose(resultado.datos[COLUMNA_TIEMPO_RUTA_A], esperado)
+    np.testing.assert_allclose(resultado.datos[COLUMNA_TIEMPO_RUTA_B], esperado + 5.0)
+    assert resultado.nivel_confianza == 1.0  # patrón exacto: dispersión nula
+    assert (resultado.desviacion[COLUMNA_TIEMPO_RUTA_A] == 0.0).all()
+
+
+def test_fallback_heuristico_historia_insuficiente(estratega: AgenteEstrategaRuta) -> None:
+    historia = historia_semanal(1)
+    historia = historia[historia["dia_semana"] != 2]  # sin miércoles
+    fechas = pd.date_range(INICIO_HORIZONTE, periods=PASOS_VENTANA_SALIDA, freq="h")
+    with pytest.raises(ErrorValidacionEntrada, match="insuficiente"):
+        estratega.generar_prediccion_heuristica(fechas, historico=historia)
+    with pytest.raises(ValueError):
+        AgenteEstrategaRuta().generar_prediccion_heuristica(fechas)  # sin gestor ni historia
+
+
+def test_fallback_heuristico_desde_sqlite_y_plan(
+    agente: AgenteDatos, estratega: AgenteEstrategaRuta
+) -> None:
+    serie = agente.inicializar_datos(dias=DIAS_PRUEBA).datos
+    ultima = serie["fecha_hora"].iloc[-1]
+    fechas = pd.date_range(ultima + pd.Timedelta(hours=1), periods=PASOS_VENTANA_SALIDA, freq="h")
+    heuristica = estratega.generar_prediccion_heuristica(fechas)
+    assert 0.0 <= heuristica.nivel_confianza <= 1.0
+    acotada = ValidadorSalida().acotar_prediccion(
+        heuristica.datos[[COLUMNA_TIEMPO_RUTA_A, COLUMNA_TIEMPO_RUTA_B]].to_numpy(), fechas
+    )
+    dia = (fechas[0] + pd.Timedelta(days=1)).date()
+    plan = estratega.planificar_viaje(acotada.datos, dia, "08:00")
+    assert plan.ruta_recomendada == "Ruta_B"  # en hora punta la vía alterna es más rápida
+    assert plan.ahorro_estimado_min > 0
+
+
+# =============================================================================
+# AgentePredictorLSTM (red diminuta para que la suite sea rápida)
+# =============================================================================
+
+
+@pytest.fixture(scope="module")
+def entorno_lstm(tmp_path_factory: pytest.TempPathFactory) -> Iterator[dict[str, Any]]:
+    """Entrena una única vez una red diminuta compartida por las pruebas del módulo."""
+    pytest.importorskip("keras")
+    from src.agents import AgentePredictorLSTM
+
+    directorio = tmp_path_factory.mktemp("lstm")
+    gestor_lstm = GestorBaseDatos(directorio / "t.db", directorio / "a.jsonl")
+    datos = AgenteDatos(gestor_lstm, semilla=3)
+    auditor_lstm = AgenteAuditor(gestor_lstm, ruta_log_eventos=directorio / "eventos.jsonl")
+    conjuntos = datos.construir_conjuntos(
+        datos.inicializar_datos(dias=DIAS_PRUEBA).datos, guardar_scalers=False
+    )
+    predictor = AgentePredictorLSTM(
+        datos.invertir_escala_salida, auditor_lstm, unidades_lstm=4, unidades_densa=8
+    )
+    resultado = predictor.entrenar(conjuntos, epocas=2, tamano_lote=8)
+    yield {
+        "directorio": directorio,
+        "gestor": gestor_lstm,
+        "datos": datos,
+        "auditor": auditor_lstm,
+        "conjuntos": conjuntos,
+        "predictor": predictor,
+        "resultado": resultado,
+        "clase": AgentePredictorLSTM,
+    }
+
+
+def test_entrenamiento_y_metricas_en_minutos(entorno_lstm: dict[str, Any]) -> None:
+    resultado = entorno_lstm["resultado"]
+    predictor = entorno_lstm["predictor"]
+    assert resultado.epocas_ejecutadas == 2
+    assert {"loss", "val_loss", "mae", "val_mae"} <= set(resultado.historial)
+    assert predictor.mae_validacion == pytest.approx(resultado.metricas_validacion.mae)
+    assert 0.0 < resultado.metricas_validacion.mae < 100.0  # minutos, no escala [0, 1]
+    eventos = leer_jsonl(entorno_lstm["auditor"].ruta_log_eventos)
+    etiquetas = [e["datos"]["etiqueta"] for e in eventos if e["tipo_evento"] == "METRICAS_MODELO"]
+    assert etiquetas == ["validacion", "prueba"]
+
+
+def test_arquitectura_bidireccional(entorno_lstm: dict[str, Any]) -> None:
+    modelo = entorno_lstm["predictor"].modelo
+    nombres = [capa.name for capa in modelo.layers]
+    assert "bilstm" in nombres and "dropout_lstm" in nombres and "dropout_densa" in nombres
+    assert type(modelo.get_layer("bilstm")).__name__ == "Bidirectional"
+    assert modelo.get_layer("dropout_lstm").rate == pytest.approx(0.25)
+    assert modelo.input_shape == (None, PASOS_VENTANA_ENTRADA, len(COLUMNAS_CARACTERISTICAS))
+    assert modelo.output_shape == (None, PASOS_VENTANA_SALIDA, 2)
+    assert type(modelo.loss).__name__ == "Huber"
+
+
+def test_prediccion_determinista(entorno_lstm: dict[str, Any]) -> None:
+    predictor, conjuntos = entorno_lstm["predictor"], entorno_lstm["conjuntos"]
+    primera = predictor.predecir(conjuntos.x_prueba[:2])
+    assert primera.shape == (2, PASOS_VENTANA_SALIDA, 2)
+    np.testing.assert_allclose(primera, predictor.predecir(conjuntos.x_prueba[:2]))
+
+
+def test_monte_carlo_dropout(entorno_lstm: dict[str, Any]) -> None:
+    predictor, conjuntos = entorno_lstm["predictor"], entorno_lstm["conjuntos"]
+    incertidumbre = predictor.predecir_con_incertidumbre(conjuntos.x_prueba[0], iteraciones=10)
+    assert incertidumbre.media.shape == (PASOS_VENTANA_SALIDA, 2)
+    assert (incertidumbre.desviacion > 0).any()  # el dropout está activo
+    assert (incertidumbre.limite_inferior <= incertidumbre.media).all()
+    assert (incertidumbre.media <= incertidumbre.limite_superior).all()
+    assert 0.0 <= incertidumbre.nivel_confianza <= 1.0
+    with pytest.raises(ErrorValidacionEntrada, match="única"):
+        predictor.predecir_con_incertidumbre(conjuntos.x_prueba[:2])
+    with pytest.raises(ValueError):
+        predictor.predecir_con_incertidumbre(conjuntos.x_prueba[0], iteraciones=1)
+
+
+def test_validacion_de_entradas_del_predictor(entorno_lstm: dict[str, Any]) -> None:
+    predictor = entorno_lstm["predictor"]
+    with pytest.raises(ErrorValidacionEntrada, match="forma"):
+        predictor.predecir(np.zeros((1, 100, len(COLUMNAS_CARACTERISTICAS))))
+    con_nan = np.zeros((1, PASOS_VENTANA_ENTRADA, len(COLUMNAS_CARACTERISTICAS)))
+    con_nan[0, 0, 0] = np.nan
+    with pytest.raises(ErrorValidacionEntrada, match="no finitos"):
+        predictor.predecir(con_nan)
+
+
+def test_guardar_y_cargar_modelo(entorno_lstm: dict[str, Any]) -> None:
+    directorio: Path = entorno_lstm["directorio"]
+    predictor, conjuntos = entorno_lstm["predictor"], entorno_lstm["conjuntos"]
+    ruta_modelo, ruta_meta = directorio / "modelo.keras", directorio / "modelo.json"
+    predictor.guardar(ruta_modelo, ruta_meta, resultado=entorno_lstm["resultado"])
+    metadatos = json.loads(ruta_meta.read_text(encoding="utf-8"))
+    assert metadatos["mae_validacion"] == pytest.approx(predictor.mae_validacion)
+    assert metadatos["hiperparametros"]["unidades_lstm"] == 4
+
+    cargado = entorno_lstm["clase"](
+        entorno_lstm["datos"].invertir_escala_salida, entorno_lstm["auditor"]
+    )
+    cargado.cargar(ruta_modelo, ruta_meta)
+    assert cargado.mae_validacion == pytest.approx(predictor.mae_validacion)
+    np.testing.assert_allclose(
+        cargado.predecir(conjuntos.x_prueba[:1]),
+        predictor.predecir(conjuntos.x_prueba[:1]),
+        rtol=1e-5,
+    )
+
+    sin_meta = entorno_lstm["clase"](
+        entorno_lstm["datos"].invertir_escala_salida, entorno_lstm["auditor"]
+    )
+    sin_meta.cargar(ruta_modelo, directorio / "no_existe.json")
+    assert sin_meta.mae_validacion is None  # → MAE_DESCONOCIDO en el protocolo fallback
+
+    with pytest.raises(ValueError, match=".keras"):
+        predictor.guardar(directorio / "modelo.h5", ruta_meta)
+
+
+def test_modelo_no_disponible(entorno_lstm: dict[str, Any]) -> None:
+    import keras
+
+    clase, directorio = entorno_lstm["clase"], entorno_lstm["directorio"]
+    vacio = clase(entorno_lstm["datos"].invertir_escala_salida, entorno_lstm["auditor"])
+    assert not vacio.esta_entrenado
+    with pytest.raises(ErrorModeloNoDisponible):
+        vacio.predecir(entorno_lstm["conjuntos"].x_prueba[:1])
+    with pytest.raises(ErrorModeloNoDisponible, match="No existe"):
+        vacio.cargar(directorio / "inexistente.keras")
+
+    entrada = keras.Input(shape=(10, 3))
+    ajeno = keras.Model(entrada, keras.layers.Dense(1)(entrada))
+    ajeno.save(directorio / "ajeno.keras")
+    with pytest.raises(ErrorModeloNoDisponible, match="incompatible"):
+        vacio.cargar(directorio / "ajeno.keras")
+
+
+@pytest.mark.parametrize(
+    "kwargs", [{"tasa_dropout": 0.0}, {"unidades_lstm": 0}, {"tasa_aprendizaje": -1.0}]
+)
+def test_hiperparametros_invalidos(entorno_lstm: dict[str, Any], kwargs: dict[str, Any]) -> None:
+    with pytest.raises(ValueError):
+        entorno_lstm["clase"](
+            entorno_lstm["datos"].invertir_escala_salida, entorno_lstm["auditor"], **kwargs
+        )
+
+
+def test_flujo_de_inferencia_de_punta_a_punta(entorno_lstm: dict[str, Any]) -> None:
+    """Datos → LSTM + MC Dropout → guardrails de salida → estratega → contrato → auditoría."""
+    datos, predictor, auditor_lstm = (
+        entorno_lstm["datos"],
+        entorno_lstm["predictor"],
+        entorno_lstm["auditor"],
+    )
+    ventana = datos.preparar_ventana_inferencia()
+    incertidumbre = predictor.predecir_con_incertidumbre(ventana.x, iteraciones=10)
+
+    validador = ValidadorSalida()
+    acotada = validador.acotar_prediccion(incertidumbre.media, ventana.fechas_objetivo)
+    evaluacion = validador.evaluar_confianza(
+        incertidumbre.nivel_confianza, predictor.mae_validacion
+    )
+    plan = AgenteEstrategaRuta(entorno_lstm["gestor"]).planificar_viaje(
+        acotada.datos, (ventana.fechas_objetivo[0] + pd.Timedelta(days=1)).date(), "07:30"
+    )
+    recomendacion_final = validador.construir_recomendacion(
+        ruta_recomendada=plan.ruta_recomendada,
+        tiempo_estimado_min=plan.tiempo_estimado_min,
+        ahorro_estimado_min=plan.ahorro_estimado_min,
+        hora_optima_salida=plan.hora_optima_salida,
+        nivel_confianza_pct=round(incertidumbre.nivel_confianza * 100.0, 2),
+        modo_inferencia=evaluacion.modo_inferencia,
+        mae_modelo=predictor.mae_validacion,
+        motivos_fallback=evaluacion.motivos_fallback,
+        alerta_extrapolacion=acotada.alerta_extrapolacion,
+    )
+    id_transaccion = auditor_lstm.registrar_inferencia(recomendacion_final)
+    assert entorno_lstm["gestor"].obtener_auditorias().iloc[0]["id_transaccion"] == id_transaccion

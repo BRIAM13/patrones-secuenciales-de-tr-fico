@@ -13,6 +13,7 @@ Jerarquía::
     ├── ErrorExtrapolacionSalida
     ├── ErrorContratoSalida
     ├── AlertaDataDrift
+    ├── ErrorModeloNoDisponible
     └── ErrorBaseDatos
 """
 
@@ -93,6 +94,11 @@ class ErrorContratoSalida(ErrorSistemaTrafico):
 
 class AlertaDataDrift(ErrorSistemaTrafico):
     """La distribución reciente de los datos difiere de la de referencia."""
+
+
+class ErrorModeloNoDisponible(ErrorSistemaTrafico):
+    """No hay un modelo LSTM entrenado o cargable (activa el motivo de fallback
+    ``MODELO_NO_DISPONIBLE``)."""
 
 
 class ErrorBaseDatos(ErrorSistemaTrafico):
