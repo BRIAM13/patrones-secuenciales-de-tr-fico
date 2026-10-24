@@ -11,6 +11,7 @@ Jerarquía::
     ├── ErrorValidacionEntrada
     │   └── ErrorIntegridadSecuencial
     ├── ErrorExtrapolacionSalida
+    ├── ErrorContratoSalida
     ├── AlertaDataDrift
     └── ErrorBaseDatos
 """
@@ -74,7 +75,20 @@ class ErrorIntegridadSecuencial(ErrorValidacionEntrada):
 
 
 class ErrorExtrapolacionSalida(ErrorSistemaTrafico):
-    """La predicción cae fuera del rango físico permitido de salida."""
+    """La predicción no es acotable al rango físico de salida.
+
+    Se lanza cuando la red produce valores no finitos (``NaN``/infinito) o con
+    una forma incompatible; los valores finitos fuera de rango se recortan y
+    solo activan la bandera ``ALERTA_EXTRAPOLACION``.
+    """
+
+
+class ErrorContratoSalida(ErrorSistemaTrafico):
+    """La recomendación viola el contrato JSON estricto de salida.
+
+    Incluye el caso en que se pretende emitir en modo ``RED_LSTM`` una
+    inferencia que, por confianza o MAE, debía conmutar a fallback.
+    """
 
 
 class AlertaDataDrift(ErrorSistemaTrafico):

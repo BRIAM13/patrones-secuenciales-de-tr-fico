@@ -1,12 +1,9 @@
-"""Reglas estrictas de entrada y salida (Guardrails) y excepciones del dominio.
-
-Estado actual: excepciones y ``ValidadorEntrada`` implementados; el
-``ValidadorSalida`` (``output_validator.py``) está pendiente.
-"""
+"""Reglas estrictas de entrada y salida (Guardrails) y excepciones del dominio."""
 
 from src.guardrails.exceptions import (
     AlertaDataDrift,
     ErrorBaseDatos,
+    ErrorContratoSalida,
     ErrorExtrapolacionSalida,
     ErrorIntegridadSecuencial,
     ErrorSistemaTrafico,
@@ -19,17 +16,30 @@ from src.guardrails.input_validator import (
     ResultadoValidacion,
     ValidadorEntrada,
 )
+from src.guardrails.output_validator import (
+    EvaluacionConfianza,
+    PrediccionAcotada,
+    RecomendacionTrafico,
+    ValidadorSalida,
+    determinar_estado_auditoria,
+)
 
 __all__: list[str] = [
     "COLUMNAS_ESQUEMA_ENTRADA",
     "AlertaDataDrift",
     "ErrorBaseDatos",
+    "ErrorContratoSalida",
     "ErrorExtrapolacionSalida",
     "ErrorIntegridadSecuencial",
     "ErrorSistemaTrafico",
     "ErrorValidacionEntrada",
+    "EvaluacionConfianza",
+    "PrediccionAcotada",
+    "RecomendacionTrafico",
     "RegistroTraficoEntrada",
     "ReporteValidacion",
     "ResultadoValidacion",
     "ValidadorEntrada",
+    "ValidadorSalida",
+    "determinar_estado_auditoria",
 ]

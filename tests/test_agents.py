@@ -1,15 +1,17 @@
-"""Pruebas del ``AgenteDatos``: generación, ingestión, codificación y ventanas."""
+"""Pruebas de los agentes: ``AgenteDatos`` (datos e ingestión) y ``AgenteAuditor`` (MLOps)."""
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
+from typing import Any
 
 import joblib
 import numpy as np
 import pandas as pd
 import pytest
 
-from src.agents import AgenteDatos, codificar_variables_ciclicas
+from src.agents import AgenteAuditor, AgenteDatos, codificar_variables_ciclicas
 from src.config import (
     COLUMNA_TIEMPO_RUTA_A,
     COLUMNA_TIEMPO_RUTA_B,
@@ -22,10 +24,13 @@ from src.config import (
 from src.database import GestorBaseDatos
 from src.guardrails import (
     COLUMNAS_ESQUEMA_ENTRADA,
+    AlertaDataDrift,
+    ErrorBaseDatos,
     ErrorIntegridadSecuencial,
     ErrorSistemaTrafico,
     ErrorValidacionEntrada,
     ValidadorEntrada,
+    ValidadorSalida,
 )
 
 DIAS_PRUEBA = 60
@@ -331,3 +336,240 @@ def test_guardar_y_cargar_scalers(
     joblib.dump({"no": "scaler"}, rutas[0])
     with pytest.raises(ErrorSistemaTrafico, match="MinMaxScaler"):
         nuevo.cargar_scalers(*rutas)
+
+
+# =============================================================================
+# AgenteAuditor
+# =============================================================================
+
+
+@pytest.fixture
+def auditor(gestor: GestorBaseDatos, tmp_path: Path) -> AgenteAuditor:
+    """Auditor con log de eventos aislado."""
+    return AgenteAuditor(gestor, ruta_log_eventos=tmp_path / "logs" / "eventos.jsonl")
+
+
+def leer_jsonl(ruta: Path) -> list[dict[str, Any]]:
+    """Lee un archivo JSONL completo."""
+    return [json.loads(linea) for linea in ruta.read_text(encoding="utf-8").splitlines()]
+
+
+def recomendacion(**cambios: Any) -> Any:
+    """Recomendación válida (``RED_LSTM`` sin alertas) con cambios opcionales."""
+    campos: dict[str, Any] = {
+        "ruta_recomendada": "Ruta_A",
+        "tiempo_estimado_min": 38.0,
+        "ahorro_estimado_min": 4.5,
+        "hora_optima_salida": "06:45",
+        "nivel_confianza_pct": 88.0,
+        "modo_inferencia": "RED_LSTM",
+        "mae_modelo": 7.5,
+    }
+    campos.update(cambios)
+    return ValidadorSalida().construir_recomendacion(**campos)
+
+
+@pytest.mark.parametrize("kwargs", [{"umbral_p_valor": 0.0}, {"umbral_z_score": -1.0}])
+def test_auditor_umbrales_invalidos(gestor: GestorBaseDatos, kwargs: dict[str, float]) -> None:
+    with pytest.raises(ValueError):
+        AgenteAuditor(gestor, **kwargs)
+
+
+# --- Trazabilidad -------------------------------------------------------------
+
+
+def test_registrar_inferencia_en_sqlite_y_jsonl(
+    auditor: AgenteAuditor, gestor: GestorBaseDatos
+) -> None:
+    rec = recomendacion(alerta_drift=True)
+    id_transaccion = auditor.registrar_inferencia(rec)
+    assert id_transaccion == str(rec.id_transaccion)
+
+    fila = gestor.obtener_auditorias().iloc[0]
+    assert fila["estado_auditoria"] == "APROBADO_CON_ALERTAS"
+    assert bool(fila["alerta_drift"])
+    lineas = leer_jsonl(gestor.ruta_log_jsonl)
+    assert [linea["id_transaccion"] for linea in lineas] == [id_transaccion]
+
+
+def test_registrar_reportes_validacion_vacia_la_cola(
+    agente: AgenteDatos, auditor: AgenteAuditor
+) -> None:
+    agente.inicializar_datos(dias=20)
+    pendientes = len(agente.reportes_validacion)
+    assert pendientes >= 2  # ingesta + carga
+    assert auditor.registrar_reportes_validacion(agente.reportes_validacion) == pendientes
+    assert agente.reportes_validacion == []
+
+    eventos = leer_jsonl(auditor.ruta_log_eventos)
+    assert {e["tipo_evento"] for e in eventos} == {"VALIDACION_ENTRADA"}
+    assert eventos[0]["datos"]["alcance"] == "SERIE"
+
+
+def test_registrar_reportes_sin_vaciar(agente: AgenteDatos, auditor: AgenteAuditor) -> None:
+    agente.inicializar_datos(dias=20)
+    pendientes = list(agente.reportes_validacion)
+    auditor.registrar_reportes_validacion(agente.reportes_validacion, vaciar=False)
+    assert agente.reportes_validacion == pendientes
+
+
+def test_registrar_error_del_dominio_y_generico(auditor: AgenteAuditor) -> None:
+    auditor.registrar_error(
+        ErrorValidacionEntrada("ventana corrupta", detalles={"fraccion": np.float64(0.2)}),
+        contexto="inferencia",
+    )
+    auditor.registrar_error(RuntimeError("fallo inesperado"), contexto="entrenamiento")
+    primero, segundo = leer_jsonl(auditor.ruta_log_eventos)
+    assert primero["tipo_evento"] == "ERROR"
+    assert primero["datos"] == {
+        "codigo": "ErrorValidacionEntrada",
+        "mensaje": "ventana corrupta",
+        "detalles": {"fraccion": 0.2},
+        "contexto": "inferencia",
+    }
+    assert segundo["datos"]["codigo"] == "RuntimeError"
+
+
+def test_registrar_evento_invalido(auditor: AgenteAuditor, tmp_path: Path) -> None:
+    with pytest.raises(ValueError):
+        auditor.registrar_evento("INVENTADO", {})
+    with pytest.raises(ErrorBaseDatos):
+        auditor.registrar_evento("METRICAS_MODELO", {"mae": float("nan")})
+    roto = AgenteAuditor(auditor.gestor_bd, ruta_log_eventos=tmp_path)  # es un directorio
+    with pytest.raises(ErrorBaseDatos):
+        roto.registrar_evento("METRICAS_MODELO", {"mae": 1.0})
+
+
+# --- Métricas -----------------------------------------------------------------
+
+
+def test_calcular_metricas_valores_conocidos(auditor: AgenteAuditor) -> None:
+    reales = np.array([[10.0, 20.0], [30.0, 40.0]])
+    predichos = np.array([[12.0, 18.0], [30.0, 44.0]])
+    metricas = auditor.calcular_metricas(reales, predichos, etiqueta="prueba")
+    assert metricas.n_observaciones == 2
+    assert metricas.mae == pytest.approx(2.0)
+    assert metricas.rmse == pytest.approx(np.sqrt(6.0))
+    assert metricas.sesgo == pytest.approx(1.0)
+    assert metricas.mae_por_ruta == pytest.approx(
+        {COLUMNA_TIEMPO_RUTA_A: 1.0, COLUMNA_TIEMPO_RUTA_B: 3.0}
+    )
+    assert metricas.rmse_por_ruta[COLUMNA_TIEMPO_RUTA_B] == pytest.approx(np.sqrt(10.0))
+    assert metricas.sesgo_por_ruta == pytest.approx(
+        {COLUMNA_TIEMPO_RUTA_A: 1.0, COLUMNA_TIEMPO_RUTA_B: 1.0}
+    )
+
+
+def test_calcular_metricas_tensores_3d(auditor: AgenteAuditor) -> None:
+    reales = np.full((3, PASOS_VENTANA_SALIDA, 2), 40.0)
+    metricas = auditor.calcular_metricas(reales, reales + 5.0)
+    assert metricas.n_observaciones == 3 * PASOS_VENTANA_SALIDA
+    assert metricas.mae == pytest.approx(5.0) and metricas.sesgo == pytest.approx(5.0)
+
+
+@pytest.mark.parametrize(
+    ("reales", "predichos"),
+    [
+        (np.zeros((4, 2)), np.zeros((5, 2))),
+        (np.zeros((4, 3)), np.zeros((4, 3))),
+        (np.zeros((0, 2)), np.zeros((0, 2))),
+        (np.array([[np.nan, 1.0]]), np.array([[1.0, 1.0]])),
+    ],
+)
+def test_calcular_metricas_entradas_invalidas(
+    auditor: AgenteAuditor, reales: np.ndarray, predichos: np.ndarray
+) -> None:
+    with pytest.raises(ValueError):
+        auditor.calcular_metricas(reales, predichos)
+
+
+def test_registrar_metricas(auditor: AgenteAuditor) -> None:
+    metricas = auditor.calcular_metricas(np.ones((2, 2)) * 30, np.ones((2, 2)) * 33)
+    auditor.registrar_metricas(metricas)
+    (evento,) = leer_jsonl(auditor.ruta_log_eventos)
+    assert evento["tipo_evento"] == "METRICAS_MODELO"
+    assert evento["datos"]["mae"] == pytest.approx(3.0)
+
+
+# --- Data Drift ---------------------------------------------------------------
+
+
+@pytest.fixture
+def serie_anual(agente: AgenteDatos) -> pd.DataFrame:
+    """Un año sintético estacionario (sin persistir)."""
+    return agente.generar_datos_sinteticos(dias=365)
+
+
+def test_sin_drift_en_serie_estacionaria(auditor: AgenteAuditor, serie_anual: pd.DataFrame) -> None:
+    reporte = auditor.evaluar_drift(serie_anual)
+    assert not reporte.hay_drift
+    assert {r.columna for r in reporte.resultados} == {COLUMNA_TIEMPO_RUTA_A, COLUMNA_TIEMPO_RUTA_B}
+    assert reporte.fin_reciente == serie_anual["fecha_hora"].iloc[-1]
+    assert (reporte.inicio_reciente - reporte.fin_referencia) == pd.Timedelta(hours=1)
+    (evento,) = leer_jsonl(auditor.ruta_log_eventos)
+    assert evento["tipo_evento"] == "DATA_DRIFT" and evento["datos"]["hay_drift"] is False
+
+
+def test_drift_detectado_ante_desplazamiento(
+    auditor: AgenteAuditor, serie_anual: pd.DataFrame
+) -> None:
+    desplazada = serie_anual.copy()
+    recientes = desplazada.index[-14 * 24 :]
+    desplazada.loc[recientes, COLUMNA_TIEMPO_RUTA_A] *= 1.25
+    reporte = auditor.evaluar_drift(desplazada, registrar=False)
+    assert reporte.hay_drift
+    resultado_a = next(r for r in reporte.resultados if r.columna == COLUMNA_TIEMPO_RUTA_A)
+    assert set(resultado_a.criterios_activados) == {"KOLMOGOROV_SMIRNOV", "Z_SCORE"}
+    assert resultado_a.media_reciente > resultado_a.media_referencia
+    assert not auditor.ruta_log_eventos.exists()
+
+
+def test_drift_con_alerta_registra_antes_de_lanzar(
+    auditor: AgenteAuditor, serie_anual: pd.DataFrame
+) -> None:
+    desplazada = serie_anual.copy()
+    desplazada.loc[desplazada.index[-14 * 24 :], COLUMNA_TIEMPO_RUTA_B] += 15.0
+    with pytest.raises(AlertaDataDrift) as error:
+        auditor.evaluar_drift(desplazada, lanzar_alerta=True)
+    assert error.value.detalles["hay_drift"] is True
+    assert leer_jsonl(auditor.ruta_log_eventos)[0]["datos"]["hay_drift"] is True
+
+
+def test_drift_historia_insuficiente_o_sucia(
+    auditor: AgenteAuditor, serie_anual: pd.DataFrame
+) -> None:
+    with pytest.raises(ErrorValidacionEntrada, match="insuficiente"):
+        auditor.evaluar_drift(serie_anual.tail(41 * 24))
+    sucia = serie_anual.copy()
+    sucia.loc[sucia.index[-1], COLUMNA_TIEMPO_RUTA_A] = np.nan
+    with pytest.raises(ErrorValidacionEntrada, match="no finitos"):
+        auditor.evaluar_drift(sucia)
+    with pytest.raises(ErrorValidacionEntrada, match="días completos"):
+        auditor.detectar_data_drift(np.ones(50), np.ones(48), COLUMNA_TIEMPO_RUTA_A)
+
+
+# --- Resumen ------------------------------------------------------------------
+
+
+def test_resumir_auditorias(auditor: AgenteAuditor) -> None:
+    vacio = auditor.resumir_auditorias()
+    assert vacio.total_inferencias == 0 and vacio.confianza_media_pct is None
+
+    auditor.registrar_inferencia(recomendacion(nivel_confianza_pct=80.0, mae_modelo=6.0))
+    auditor.registrar_inferencia(recomendacion(nivel_confianza_pct=90.0, mae_modelo=8.0))
+    auditor.registrar_inferencia(
+        recomendacion(
+            modo_inferencia="FALLBACK_HEURISTICO",
+            nivel_confianza_pct=40.0,
+            mae_modelo=None,
+            motivos_fallback=("MODELO_NO_DISPONIBLE",),
+            alerta_drift=True,
+        )
+    )
+    resumen = auditor.resumir_auditorias()
+    assert resumen.total_inferencias == 3
+    assert resumen.por_modo == {"RED_LSTM": 2, "FALLBACK_HEURISTICO": 1}
+    assert resumen.tasa_fallback == pytest.approx(1 / 3)
+    assert resumen.confianza_media_pct == pytest.approx(70.0)
+    assert resumen.mae_medio == pytest.approx(7.0)
+    assert resumen.alertas_drift == 1

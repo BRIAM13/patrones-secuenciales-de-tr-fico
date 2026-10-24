@@ -29,6 +29,8 @@ DIR_LOGS: Final[Path] = DIR_RAIZ_PROYECTO / "logs"
 
 RUTA_BASE_DATOS: Final[Path] = DIR_DATOS / "trafico_cotidiano.db"
 RUTA_LOG_AUDITORIA: Final[Path] = DIR_LOGS / "auditoria_trafico.jsonl"
+RUTA_LOG_EVENTOS: Final[Path] = DIR_LOGS / "eventos_mlops.jsonl"
+"""Log inmutable de eventos MLOps (guardrails, errores, métricas y drift)."""
 
 RUTA_MODELO_LSTM: Final[Path] = DIR_ARTEFACTOS / "modelo_lstm_trafico.keras"
 RUTA_SCALER_ENTRADA: Final[Path] = DIR_ARTEFACTOS / "scaler_entrada.pkl"
@@ -182,11 +184,28 @@ UMBRAL_CONFIANZA_MIN: Final[float] = 0.75
 UMBRAL_MAE_MAX_MIN: Final[float] = 12.0
 """MAE de validación máximo (minutos) antes de conmutar a fallback."""
 
-BANDERA_ALERTA_EXTRAPOLACION: Final[str] = "ALERTA_EXTRAPOLACION"
-
 MODO_RED_LSTM: Final[str] = "RED_LSTM"
 MODO_FALLBACK_HEURISTICO: Final[str] = "FALLBACK_HEURISTICO"
 MODOS_INFERENCIA_VALIDOS: Final[tuple[str, ...]] = (MODO_RED_LSTM, MODO_FALLBACK_HEURISTICO)
+
+BANDERA_ALERTA_EXTRAPOLACION: Final[str] = "ALERTA_EXTRAPOLACION"
+BANDERA_ALERTA_DRIFT: Final[str] = "ALERTA_DRIFT"
+BANDERA_FALLBACK: Final[str] = MODO_FALLBACK_HEURISTICO
+"""Banderas que el contrato de salida expone en ``banderas``."""
+
+MOTIVO_CONFIANZA_BAJA: Final[str] = "CONFIANZA_BAJA"
+MOTIVO_MAE_ALTO: Final[str] = "MAE_ALTO"
+MOTIVO_MAE_DESCONOCIDO: Final[str] = "MAE_DESCONOCIDO"
+MOTIVO_MODELO_NO_DISPONIBLE: Final[str] = "MODELO_NO_DISPONIBLE"
+MOTIVO_PREDICCION_INVALIDA: Final[str] = "PREDICCION_INVALIDA"
+MOTIVOS_FALLBACK_VALIDOS: Final[tuple[str, ...]] = (
+    MOTIVO_CONFIANZA_BAJA,
+    MOTIVO_MAE_ALTO,
+    MOTIVO_MAE_DESCONOCIDO,
+    MOTIVO_MODELO_NO_DISPONIBLE,
+    MOTIVO_PREDICCION_INVALIDA,
+)
+"""Causas que justifican conmutar de ``RED_LSTM`` a ``FALLBACK_HEURISTICO``."""
 
 # =============================================================================
 # 7. Hiperparámetros de la red Bidirectional LSTM (AgentePredictorLSTM)
@@ -280,17 +299,32 @@ DESPLAZAMIENTOS_HORARIO_MIN: Final[tuple[int, ...]] = (-30, -15, 0, 15)
 # =============================================================================
 
 UMBRAL_P_VALOR_KS: Final[float] = 0.05
-"""p-valor bajo el cual la prueba Kolmogorov-Smirnov indica drift."""
+"""p-valor bajo el cual la prueba Kolmogorov-Smirnov (datos horarios) indica drift."""
 
 UMBRAL_Z_SCORE_DRIFT: Final[float] = 3.0
-"""|Z| de la media reciente sobre el cual se declara drift."""
+"""|Z| de la media diaria reciente frente a la referencia sobre el cual se declara drift."""
 
 DIAS_REFERENCIA_DRIFT: Final[int] = 28
 """Días de historia usados como distribución de referencia del drift."""
 
+DIAS_RECIENTES_DRIFT: Final[int] = DIAS_VENTANA_ENTRADA
+"""Días recientes comparados contra la referencia (la ventana de inferencia)."""
+
+EVENTO_VALIDACION_ENTRADA: Final[str] = "VALIDACION_ENTRADA"
+EVENTO_ERROR: Final[str] = "ERROR"
+EVENTO_METRICAS: Final[str] = "METRICAS_MODELO"
+EVENTO_DRIFT: Final[str] = "DATA_DRIFT"
+TIPOS_EVENTO_VALIDOS: Final[tuple[str, ...]] = (
+    EVENTO_VALIDACION_ENTRADA,
+    EVENTO_ERROR,
+    EVENTO_METRICAS,
+    EVENTO_DRIFT,
+)
+
 ESTADO_AUDITORIA_APROBADO: Final[str] = "APROBADO"
 ESTADO_AUDITORIA_CON_ALERTAS: Final[str] = "APROBADO_CON_ALERTAS"
 ESTADO_AUDITORIA_RECHAZADO: Final[str] = "RECHAZADO"
+"""Reservado: el contrato de salida solo emite ``APROBADO`` o ``APROBADO_CON_ALERTAS``."""
 ESTADOS_AUDITORIA_VALIDOS: Final[tuple[str, ...]] = (
     ESTADO_AUDITORIA_APROBADO,
     ESTADO_AUDITORIA_CON_ALERTAS,
