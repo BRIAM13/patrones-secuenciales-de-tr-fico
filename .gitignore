@@ -1,0 +1,76 @@
+# =============================================================================
+# .gitignore — patrones-secuenciales-de-tr-fico
+# =============================================================================
+
+# --- Python -------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+.eggs/
+build/
+dist/
+pip-wheel-metadata/
+
+# --- Entornos virtuales -------------------------------------------------------
+.venv/
+venv/
+env/
+ENV/
+.python-version
+
+# --- Variables de entorno y secretos ------------------------------------------
+.env
+.env.*
+!.env.example
+
+# --- Testing y cobertura ------------------------------------------------------
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+.tox/
+.nox/
+
+# --- Herramientas de análisis estático ----------------------------------------
+.mypy_cache/
+.ruff_cache/
+.pyright/
+
+# --- Jupyter ------------------------------------------------------------------
+.ipynb_checkpoints/
+
+# --- IDEs y sistema operativo -------------------------------------------------
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# --- Datos generados en ejecución (se conserva la estructura con .gitkeep) ----
+data/*
+!data/.gitkeep
+
+# --- Artefactos de entrenamiento (modelos .keras, scalers .pkl, gráficas) -----
+artifacts/*
+!artifacts/.gitkeep
+
+# --- Logs de auditoría --------------------------------------------------------
+logs/*
+!logs/.gitkeep
+
+# --- SQLite (por si se crea una BD fuera de data/) ----------------------------
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite3
+
+# --- TensorFlow / Keras -------------------------------------------------------
+checkpoints/
+tensorboard_logs/
+*.h5

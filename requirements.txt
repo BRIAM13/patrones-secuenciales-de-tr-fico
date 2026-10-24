@@ -1,0 +1,27 @@
+# =============================================================================
+# Dependencias del Sistema Multi-Agente LSTM de Predicción de Tráfico Cotidiano
+# Compatibles con Python 3.10 – 3.13 (versiones fijas para reproducibilidad)
+# Instalación: pip install -r requirements.txt
+# =============================================================================
+
+# --- Deep Learning ------------------------------------------------------------
+tensorflow==2.20.0
+keras==3.11.3
+
+# --- Cómputo numérico y manipulación de datos ---------------------------------
+numpy==2.2.6
+pandas==2.3.3
+
+# --- Preprocesamiento, métricas y pruebas estadísticas (Data Drift) -----------
+scikit-learn==1.7.2
+scipy==1.15.3
+joblib==1.5.2
+
+# --- Contratos de datos y Guardrails ------------------------------------------
+pydantic==2.12.3
+
+# --- Visualización ------------------------------------------------------------
+matplotlib==3.10.7
+
+# --- Testing ------------------------------------------------------------------
+pytest==8.4.2
